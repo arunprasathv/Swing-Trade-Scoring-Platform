@@ -55,3 +55,4 @@ Clone the repo:
 ```bash
 git clone https://github.com/YOUR_USERNAME/swing-trade-scorer.git
 cd swing-trade-scorer
+to run local - py -m streamlit run streamlit_app.py

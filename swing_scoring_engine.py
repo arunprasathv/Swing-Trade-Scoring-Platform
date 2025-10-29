@@ -1,245 +1,365 @@
-import yfinance as yf
-import pandas as pd
-import numpy as np
-from datetime import datetime, timedelta
-import os
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Swing Trade Scoring Engine (US Equities) — Macro-Aware, SPY/Sector-Aligned
+----------------------------------------------------------------------------
+Data source: yfinance (daily/EOD). Designed for 2–10 day swing setups.
 
-# Sector ETF mappings
-SECTOR_ETFS = {
-    'XLK': ['AAPL', 'MSFT', 'NVDA', 'AMD', 'GOOGL', 'META', 'ORCL', 'CRM', 'ADBE', 'CSCO', 'AVGO', 'QCOM', 'INTC', 'IBM'],
-    'XLC': ['GOOGL', 'META', 'NFLX', 'DIS', 'TMUS', 'CMCSA', 'VZ', 'T', 'EA', 'ATVI'],
-    'XLY': ['AMZN', 'TSLA', 'HD', 'MCD', 'NKE', 'SBUX', 'TJX', 'LOW', 'TGT', 'BKNG'],
-    'XLF': ['JPM', 'BAC', 'WFC', 'GS', 'MS', 'BLK', 'SCHW', 'USB', 'AXP', 'V', 'MA', 'PYPL'],
-    'XLE': ['XOM', 'CVX', 'COP', 'SLB', 'EOG', 'PXD', 'PSX', 'VLO', 'MPC', 'KMI'],
-    'XLV': ['JNJ', 'UNH', 'PFE', 'ABBV', 'MRK', 'LLY', 'TMO', 'DHR', 'BMY', 'AMGN'],
-    'XLP': ['PG', 'KO', 'PEP', 'COST', 'WMT', 'PM', 'MO', 'EL', 'CL', 'KMB'],
-    'XLI': ['HON', 'UPS', 'CAT', 'DE', 'LMT', 'RTX', 'UNP', 'BA', 'MMM', 'GE'],
-    'XLB': ['LIN', 'ECL', 'APD', 'SHW', 'FCX', 'NEM', 'DOW', 'DD', 'NUE', 'VMC'],
-    'XLRE': ['AMT', 'PLD', 'CCI', 'EQIX', 'PSA', 'O', 'DLR', 'WELL', 'AVB', 'EQR'],
-    'XLU': ['NEE', 'DUK', 'SO', 'D', 'AEP', 'SRE', 'XEL', 'ED', 'EXC', 'WEC']
+Adds: CSV export to ./output/swing_scores_YYYY-MM-DD_HHMM.csv
+"""
+
+import argparse
+import math
+import os
+import sys
+from dataclasses import dataclass
+from typing import Dict, Tuple, Optional, List
+
+import numpy as np
+import pandas as pd
+import yfinance as yf
+
+DEFAULT_LOOKBACK_DAYS = 180  # ~6 months
+EMA_PERIODS = (9, 21, 50)
+RSI_PERIOD = 14
+
+TICKER_TO_SECTOR_ETF: Dict[str, str] = {
+    "AAPL": "XLK", "MSFT": "XLK", "NVDA": "XLK", "AMD": "XLK", "AVGO": "XLK", "CRM": "XLK",
+    "JPM": "XLF", "BAC": "XLF", "WFC": "XLF", "GS": "XLF", "MS": "XLF", "SCHW": "XLF",
+    "XOM": "XLE", "CVX": "XLE", "COP": "XLE", "SLB": "XLE", "EOG": "XLE",
+    "UNH": "XLV", "JNJ": "XLV", "PFE": "XLV", "LLY": "XLV", "ABBV": "XLV",
+    "AMZN": "XLY", "TSLA": "XLY", "HD": "XLY", "MCD": "XLY", "NKE": "XLY",
+    "PG": "XLP", "KO": "XLP", "PEP": "XLP", "COST": "XLP", "WMT": "XLP",
+    "CAT": "XLI", "BA": "XLI", "HON": "XLI", "GE": "XLI", "LMT": "XLI",
+    "NEM": "XLB", "FCX": "XLB", "LIN": "XLB", "DOW": "XLB",
+    "NEE": "XLU", "DUK": "XLU", "SO": "XLU", "AEP": "XLU",
+    "PLD": "XLRE", "AMT": "XLRE", "O": "XLRE", "SPG": "XLRE", "EQIX": "XLRE",
+    "GOOGL": "XLC", "META": "XLC", "NFLX": "XLC", "DIS": "XLC"
 }
 
-def get_sector_etf(ticker):
-    """Find the sector ETF for a given ticker."""
-    ticker = ticker.upper()
-    for etf, components in SECTOR_ETFS.items():
-        if ticker in components:
-            return etf
-    # Default to technology sector for newer tech companies
-    return 'XLK'
+SECTOR_NAME_TO_SPIDER = {
+    "Technology": "XLK", "Financial Services": "XLF", "Financial": "XLF", "Energy": "XLE",
+    "Healthcare": "XLV", "Health Care": "XLV", "Consumer Cyclical": "XLY",
+    "Consumer Discretionary": "XLY", "Consumer Defensive": "XLP", "Consumer Staples": "XLP",
+    "Industrials": "XLI", "Basic Materials": "XLB", "Utilities": "XLU", "Real Estate": "XLRE",
+    "Communication Services": "XLC",
+}
 
-def calculate_atr(data, period=14):
-    """Calculate Average True Range."""
-    high = data['High']
-    low = data['Low']
-    close = data['Close'].shift(1)
-    
-    tr1 = high - low
-    tr2 = abs(high - close)
-    tr3 = abs(low - close)
-    
-    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-    atr = tr.rolling(window=period).mean()
-    
-    return atr
+VIX_SYMBOL = "^VIX"
+TNX_SYMBOL = "^TNX"
+DXY_SYMBOL = "DX-Y.NYB"
 
-def calculate_ema_score(data):
-    """Calculate score based on EMA alignments."""
-    last_row = data.iloc[-1]
-    ema_9 = last_row['EMA9']
-    ema_21 = last_row['EMA21']
-    ema_50 = last_row['EMA50']
-    
-    if ema_9 > ema_21 > ema_50:
-        return 2
-    elif ema_9 < ema_21 < ema_50:
-        return -2
-    return 0
+def ema(series: pd.Series, span: int) -> pd.Series:
+    return series.ewm(span=span, adjust=False).mean()
 
-def calculate_rsi_score(rsi):
-    """Calculate score based on RSI value."""
-    if rsi > 60:
-        return 2
-    elif rsi < 40:
-        return -2
-    return 0
+def rsi(series: pd.Series, period: int = RSI_PERIOD) -> pd.Series:
+    delta = series.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.rolling(period).mean()
+    avg_loss = loss.rolling(period).mean()
+    rs = avg_gain / (avg_loss.replace(0, np.nan))
+    rsi_val = 100 - (100 / (1 + rs))
+    return rsi_val.fillna(50)
 
-def calculate_volume_score(data):
-    """Calculate score based on volume trend."""
-    recent_volume = data['Volume'].tail(5)
-    volume_trend = np.polyfit(range(len(recent_volume)), recent_volume, 1)[0]
-    
-    if volume_trend > 0:
-        return 2
-    elif volume_trend < 0:
-        return -2
-    return 0
+def pct_change(series: pd.Series, n: int) -> float:
+    if len(series) < n + 1:
+        return 0.0
+    return float((series.iloc[-1] / series.iloc[-1 - n]) - 1.0)
 
-def detect_consolidation(data, atr_multiple=1.5):
-    """Detect if price is in consolidation."""
-    last_5_days = data.tail(5)
-    atr = calculate_atr(data).iloc[-1]
-    price_range = last_5_days['High'].max() - last_5_days['Low'].min()
-    
-    return price_range <= (atr * atr_multiple)
+def fetch_history(tickers: List[str], days: int) -> Dict[str, pd.DataFrame]:
+    unique = list(dict.fromkeys([t.upper() for t in tickers]))
+    df = yf.download(unique, period=f"{days}d", interval="1d", auto_adjust=True, group_by="ticker", threads=True, progress=False)
+    data = {}
+    if isinstance(df.columns, pd.MultiIndex):
+        for t in unique:
+            if t in df.columns.get_level_values(0):
+                sub = df[t].copy()
+                sub.dropna(how="all", inplace=True)
+                data[t] = sub
+    else:
+        data[unique[0]] = df.copy()
+    return data
 
-def calculate_risk_reward(entry, stop, target):
-    """Calculate risk-reward ratio."""
-    if stop >= entry:  # Invalid stop loss
-        return 0
-    
-    risk = entry - stop
-    reward = target - entry
-    
-    if risk == 0:  # Avoid division by zero
-        return 0
-        
-    return reward / risk
-
-def analyze_ticker(ticker):
-    """Main analysis function for a ticker."""
+def infer_sector_etf(ticker: str) -> str:
+    t = ticker.upper()
+    if t in TICKER_TO_SECTOR_ETF:
+        return TICKER_TO_SECTOR_ETF[t]
     try:
-        # Determine sector ETF
-        sector_etf = get_sector_etf(ticker)
-        print(f"Sector ETF for {ticker}: {sector_etf}")
-        
-        # Get data for SPY, sector ETF, and ticker
-        symbols = ['SPY', sector_etf, ticker, '^VIX', '^TNX', 'DX-Y.NYB']
-        print(f"Fetching data for symbols: {symbols}")
-        
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=200)
-        
-        # First check cache
-        cache_dir = "output"
-        os.makedirs(cache_dir, exist_ok=True)
-        cache_file = f"{cache_dir}/{ticker}_cache.csv"
-        
-        if os.path.exists(cache_file):
-            cache_age = datetime.now() - datetime.fromtimestamp(os.path.getmtime(cache_file))
-            if cache_age < timedelta(hours=4):  # Use cache if less than 4 hours old
-                print("Using cached data")
-                data = pd.read_csv(cache_file, index_col=0, parse_dates=True)
-            else:
-                print("Fetching fresh data")
-                data = yf.download(ticker, start=start_date, end=end_date)
-                data.to_csv(cache_file)
-        else:
-            print("Fetching fresh data")
-            data = yf.download(ticker, start=start_date, end=end_date)
-            data.to_csv(cache_file)
-            
-        spy_data = yf.download('SPY', start=start_date, end=end_date)
-        vix_data = yf.download('^VIX', start=start_date, end=end_date)
-        
-        print(f"Data fetched successfully for {len(symbols)} symbols")
-        
-        # Calculate technical indicators
-        data['EMA9'] = data['Close'].ewm(span=9, adjust=False).mean()
-        data['EMA21'] = data['Close'].ewm(span=21, adjust=False).mean()
-        data['EMA50'] = data['Close'].ewm(span=50, adjust=False).mean()
-        data['RSI'] = calculate_rsi(data['Close'])
-        
-        # Calculate component scores
-        ema_score = calculate_ema_score(data)
-        rsi_score = calculate_rsi_score(data['RSI'].iloc[-1])
-        volume_score = calculate_volume_score(data)
-        
-        # Calculate SPY score
-        print("\nCalculating SPY score:")
-        spy_ema_score = calculate_ema_score(spy_data)
-        spy_rsi_score = calculate_rsi_score(calculate_rsi(spy_data['Close']))
-        spy_volume_score = calculate_volume_score(spy_data)
-        vix_score = 0 if 15 <= vix_data['Close'].iloc[-1] <= 25 else -2
-        
-        print(f"- EMA score: {spy_ema_score}")
-        print(f"- RSI score: {spy_rsi_score}")
-        print(f"- Volume score: {spy_volume_score}")
-        print(f"- VIX last: {vix_data['Close'].iloc[-1]:.2f}, VIX score: {vix_score}")
-        
-        spy_raw_score = spy_ema_score + spy_rsi_score + spy_volume_score + vix_score
-        spy_normalized_score = (spy_raw_score + 8) * 10/16
-        
-        print(f"Raw score: {spy_raw_score}")
-        print(f"Normalized score: {spy_normalized_score}")
-        
-        # Calculate price levels
-        current_price = data['Close'].iloc[-1]
-        atr = calculate_atr(data).iloc[-1]
-        
-        entry_zone_low = current_price - (0.5 * atr)
-        entry_zone_high = current_price + (0.5 * atr)
-        stop_loss = current_price - (2 * atr)
-        target_1 = current_price + (3 * atr)
-        target_2 = current_price + (5 * atr)
-        
-        # Detect pattern
-        is_consolidating = detect_consolidation(data)
-        volume_increasing = volume_score > 0
-        
-        if is_consolidating and volume_increasing:
-            pattern = "Consolidation with increasing volume"
-        elif is_consolidating:
-            pattern = "Consolidation"
-        elif volume_increasing:
-            pattern = "Volume expansion"
-        else:
-            pattern = "No clear pattern"
-            
-        # Calculate final technical score
-        raw_score = ema_score + rsi_score + volume_score
-        if data['Close'].iloc[-1] > data['EMA50'].iloc[-1]:
-            raw_score += 2
-        elif data['Close'].iloc[-1] < data['EMA50'].iloc[-1]:
-            raw_score -= 2
-            
-        normalized_score = (raw_score + 8) * 10/16
-        
-        print(f"Analysis complete for {ticker}")
-        
-        return {
-            'Ticker': ticker,
-            'Sector ETF': sector_etf,
-            'Price': f"{current_price:.2f}",
-            'Pattern': pattern,
-            'Entry Zone': f"{entry_zone_low:.2f}–{entry_zone_high:.2f}",
-            'Stop Loss': f"{stop_loss:.2f}",
-            'TP1/TP2': f"{target_1:.2f}/{target_2:.2f}",
-            'R:R (to TP1)': f"{calculate_risk_reward(current_price, stop_loss, target_1):.2f}",
-            'ATR': f"{atr:.2f}",
-            'RSI(14)': f"{data['RSI'].iloc[-1]:.1f}",
-            'EMA9/21/50': f"{data['EMA9'].iloc[-1]:.2f}/{data['EMA21'].iloc[-1]:.2f}/{data['EMA50'].iloc[-1]:.2f}",
-            'Ticker Technical Score': f"{normalized_score:.1f}",
-            'SPY/SPX Momentum Score': f"{spy_normalized_score:.1f}",
-            'Strategy Type': 'Momentum' if normalized_score >= 7 else 'Mean Reversion' if normalized_score <= 3 else 'Mixed'
-        }
-        
-    except Exception as e:
-        print(f"Error analyzing {ticker}: {str(e)}")
-        raise e
+        info = yf.Ticker(t).get_info()
+        sector_name = info.get("sector") or info.get("industry") or ""
+        for key, etf in SECTOR_NAME_TO_SPIDER.items():
+            if key.lower() in str(sector_name).lower():
+                return etf
+    except Exception:
+        pass
+    return "XLK"
 
-def calculate_rsi(prices, period=14):
-    """Calculate Relative Strength Index."""
-    deltas = np.diff(prices)
-    seed = deltas[:period+1]
-    up = seed[seed >= 0].sum()/period
-    down = -seed[seed < 0].sum()/period
-    rs = up/down
-    rsi = np.zeros_like(prices)
-    rsi[:period] = 100. - 100./(1. + rs)
+from dataclasses import dataclass
 
-    for i in range(period, len(prices)):
-        delta = deltas[i-1]
-        if delta > 0:
-            upval = delta
-            downval = 0.
-        else:
-            upval = 0.
-            downval = -delta
+@dataclass
+class ScoreComponents:
+    ema: int
+    rsi: int
+    volume: int
+    other: int = 0
 
-        up = (up*(period-1) + upval)/period
-        down = (down*(period-1) + downval)/period
-        rs = up/down
-        rsi[i] = 100. - 100./(1. + rs)
+def compute_scores_for_symbol(df: pd.DataFrame) -> ScoreComponents:
+    e9 = ema(df["Close"], 9)
+    e21 = ema(df["Close"], 21)
+    e50 = ema(df["Close"], 50)
+    r = rsi(df["Close"], 14)
+    ema_score = 2 if (e9.iloc[-1] > e21.iloc[-1] > e50.iloc[-1]) else (-2 if (e9.iloc[-1] < e21.iloc[-1] < e50.iloc[-1]) else 0)
+    r_last = float(r.iloc[-1])
+    rsi_score = 2 if r_last > 60 else (-2 if r_last < 40 else 0)
+    vol_trend = pct_change(df["Volume"], 5)
+    volume_score = 2 if vol_trend > 0 else (-2 if vol_trend < 0 else 0)
+    return ScoreComponents(ema=ema_score, rsi=rsi_score, volume=volume_score)
 
-    return pd.Series(rsi, index=prices.index)
+def normalize_to_10(raw_sum: int, min_sum: int = -8, max_sum: int = 8) -> float:
+    clipped = max(min(raw_sum, max_sum), min_sum)
+    return ((clipped - min_sum) / (max_sum - min_sum)) * 10.0
+
+def score_spy(spy_df: pd.DataFrame, vix_df: Optional[pd.DataFrame]) -> float:
+    comps = compute_scores_for_symbol(spy_df)
+    vix_score = 0
+    try:
+        if vix_df is not None and len(vix_df) > 0:
+            vix_last = float(vix_df["Close"].iloc[-1])
+            vix_score = 2 if vix_last < 15 else (-2 if vix_last > 20 else 0)
+    except Exception:
+        pass
+    raw = comps.ema + comps.rsi + comps.volume + vix_score
+    return round(normalize_to_10(raw), 2)
+
+def score_sector(sector_df: pd.DataFrame, spy_df: pd.DataFrame) -> float:
+    comps = compute_scores_for_symbol(sector_df)
+    rel = sector_df["Close"] / spy_df["Close"].reindex_like(sector_df).ffill()
+    rel_slope = rel.tail(20).iloc[-1] - rel.tail(20).iloc[0]
+    rel_score = 2 if rel_slope > 0 else (-2 if rel_slope < 0 else 0)
+    raw = comps.ema + comps.rsi + comps.volume + rel_score
+    return round(normalize_to_10(raw), 2)
+
+def score_macro(tnx_df: Optional[pd.DataFrame], dxy_df: Optional[pd.DataFrame], vix_df: Optional[pd.DataFrame], sector_etf: str) -> float:
+    rate_score = 0; usd_score = 0; vix_score = 0
+    try:
+        if tnx_df is not None and len(tnx_df) > 5:
+            tnx_change = pct_change(tnx_df["Close"], 5)
+            if sector_etf in ("XLK", "XLC", "XLY"):
+                rate_score = 2 if tnx_change < 0 else (-2 if tnx_change > 0 else 0)
+            elif sector_etf in ("XLF", "XLE", "XLI", "XLB"):
+                rate_score = 2 if tnx_change > 0 else (-2 if tnx_change < 0 else 0)
+    except Exception:
+        pass
+    try:
+        if dxy_df is not None and len(dxy_df) > 5:
+            dxy_change = pct_change(dxy_df["Close"], 5)
+            usd_score = 2 if dxy_change < 0 else (-2 if dxy_change > 0 else 0)
+    except Exception:
+        pass
+    try:
+        if vix_df is not None and len(vix_df) > 0:
+            vix_last = float(vix_df["Close"].iloc[-1])
+            vix_score = 2 if vix_last < 15 else (-2 if vix_last > 20 else 0)
+    except Exception:
+        pass
+    raw = rate_score + usd_score + vix_score + 4
+    return float(max(0, min(10, raw)))
+
+def score_ticker(ticker_df: pd.DataFrame):
+    comps = compute_scores_for_symbol(ticker_df)
+    last = float(ticker_df["Close"].iloc[-1])
+    e9 = float(ema(ticker_df["Close"], 9).iloc[-1])
+    e21 = float(ema(ticker_df["Close"], 21).iloc[-1])
+    e50 = float(ema(ticker_df["Close"], 50).iloc[-1])
+    structure_score = 2 if (last > e21 and e21 > e50) else (-2 if (last < e21 and e21 < e50) else 0)
+    raw = comps.ema + comps.rsi + comps.volume + structure_score
+    return round(normalize_to_10(raw), 2), {"last": last, "ema9": e9, "ema21": e21, "ema50": e50}
+
+def detect_consolidation(df: pd.DataFrame, window: int = 20) -> bool:
+    """Detect if price is in consolidation pattern."""
+    recent = df.tail(window)
+    atr = (recent['High'] - recent['Low']).mean()
+    price_range = recent['High'].max() - recent['Low'].min()
+    return price_range <= (atr * 1.5)
+
+def detect_resistance_test(df: pd.DataFrame, window: int = 20) -> bool:
+    """Detect if price is testing resistance."""
+    recent = df.tail(window)
+    current = float(recent['Close'].iloc[-1])
+    recent_high = float(recent['High'].max())
+    return abs(current - recent_high) / recent_high < 0.02
+
+def classify_strategy(df: pd.DataFrame, last, e9, e21, e50, rsi_val, recent_high, recent_low) -> str:
+    # Check for consolidation first
+    if detect_consolidation(df):
+        if last > e50:
+            return "Consolidation (bullish)"
+        elif last < e50:
+            return "Consolidation (bearish)"
+        return "Consolidation (neutral)"
+        
+    # Check for resistance test
+    if detect_resistance_test(df):
+        if e9 > e21 and rsi_val > 50:
+            return "Testing Resistance (bullish)"
+        return "Testing Resistance (weak)"
+    
+    # Momentum patterns
+    if (e9 > e21 > e50) and rsi_val > 60 and last > recent_high:
+        return "Momentum / Breakout"
+    if (e9 < e21 < e50) and rsi_val < 40 and last < recent_low:
+        return "Momentum / Breakdown"
+        
+    # Mean reversion patterns
+    if rsi_val < 35 and e21 <= last <= e50:
+        return "Mean Reversion (oversold bounce)"
+    if rsi_val > 65 and e50 <= last <= e21:
+        return "Mean Reversion (overbought pullback)"
+        
+    # Reversal patterns
+    if last > e50 and e9 > e21 and rsi_val > 55:
+        if last > recent_high:
+            return "Bullish Reversal (confirmed)"
+        return "Bullish Reversal (potential)"
+    if last < e50 and e9 < e21 and rsi_val < 45:
+        if last < recent_low:
+            return "Bearish Reversal (confirmed)"
+        return "Bearish Reversal (potential)"
+        
+    return "Neutral / Wait"
+
+def compute_wcs(spy_score: float, sector_score: float, macro_score: float, ticker_score: float) -> float:
+    return round(0.35 * spy_score + 0.25 * sector_score + 0.20 * macro_score + 0.20 * ticker_score, 2)
+
+def compute_success_probability(wcs: float, spy_score: float, sector_score: float, macro_score: float) -> float:
+    base = wcs * 9.5
+    boost = 3.0 if (spy_score >= 8 and sector_score >= 8 and macro_score >= 8) else 0.0
+    penalty = 5.0 if (spy_score < 5 or macro_score < 5) else 0.0
+    prob = max(0.0, min(100.0, base + boost - penalty))
+    return round(prob, 1)
+
+def suggest_levels(df: pd.DataFrame):
+    """Calculate trade levels with tighter risk management."""
+    close = df["Close"]
+    current_close = float(close.iloc[-1])
+    atr = (df["High"] - df["Low"]).rolling(14).mean().iloc[-1]
+    e21 = ema(close, 21).iloc[-1]
+    e50 = ema(close, 50).iloc[-1]
+    
+    # Use recent swing points (5-day window for tighter control)
+    recent_low = float(df["Low"].tail(5).min())
+    recent_high = float(df["High"].tail(5).max())
+    
+    # Entry zone around EMA21
+    entry_low = float(e21 - 0.3 * atr)
+    entry_high = float(e21 + 0.3 * atr)
+    
+    # Targets based on ATR and recent price action
+    r1 = abs(current_close - recent_low)  # Recent range
+    tp1 = float(current_close + r1)  # First target at recent range
+    tp2 = float(tp1 + atr)  # Second target one ATR beyond first
+    
+    # Tighter stop loss: recent low or nearest EMA, no additional ATR buffer
+    stop_candidates = [
+        recent_low,  # Recent swing low
+        e21 if current_close > e21 else float('-inf'),  # EMA21 if above it
+        e50 if current_close > e50 else float('-inf')  # EMA50 if above it
+    ]
+    stop = max([s for s in stop_candidates if s != float('-inf')])
+    
+    return (round(entry_low, 2), round(entry_high, 2)), (round(tp1, 2), round(tp2, 2)), round(stop, 2)
+
+def analyze_ticker(ticker: str, days: int = DEFAULT_LOOKBACK_DAYS):
+    ticker = ticker.upper()
+    sector_etf = infer_sector_etf(ticker)
+    symbols = ["SPY", sector_etf, ticker, VIX_SYMBOL, TNX_SYMBOL, DXY_SYMBOL]
+    data = fetch_history(symbols, days=days)
+    if "SPY" not in data or ticker not in data or sector_etf not in data:
+        raise RuntimeError("Missing data for SPY, Sector ETF, or Ticker.")
+    spy_df = data["SPY"].dropna()
+    sector_df = data[sector_etf].dropna()
+    ticker_df = data[ticker].dropna()
+    vix_df = data.get(VIX_SYMBOL, pd.DataFrame()).dropna()
+    tnx_df = data.get(TNX_SYMBOL, pd.DataFrame()).dropna()
+    dxy_df = data.get(DXY_SYMBOL, pd.DataFrame()).dropna()
+    spy_score = score_spy(spy_df, vix_df)
+    sector_score = score_sector(sector_df, spy_df)
+    macro_score = score_macro(tnx_df, dxy_df, vix_df, sector_etf)
+    ticker_score, levels = score_ticker(ticker_df)
+    rsi_val = float(rsi(ticker_df["Close"]).iloc[-1])
+    recent_high = float(ticker_df["Close"].tail(20).max())
+    recent_low = float(ticker_df["Close"].tail(20).min())
+    strat = classify_strategy(ticker_df, levels["last"], levels["ema9"], levels["ema21"], levels["ema50"], rsi_val, recent_high, recent_low)
+    wcs = compute_wcs(spy_score, sector_score, macro_score, ticker_score)
+    prob = compute_success_probability(wcs, spy_score, sector_score, macro_score)
+    entry_range, tps, stop = suggest_levels(ticker_df)
+    current_price = levels["last"]
+    
+    # Calculate R:R using current price instead of entry mid
+    reward = tps[0] - current_price  # Distance to first target
+    risk = current_price - stop  # Distance to stop
+    
+    if risk <= 0 or reward <= 0:  # Invalid setup
+        rr = 0
+    else:
+        # Cap risk/reward at 5:1 to avoid unrealistic ratios from tiny stops
+        risk_pct = risk / current_price  # Risk as percentage of price
+        if risk_pct < 0.002:  # If risk is less than 0.2% of price
+            risk = current_price * 0.002  # Use minimum 0.2% risk
+        rr = round(min(reward / risk, 5.0), 2)  # Cap at 5:1
+    trade_rating = round(wcs, 1)
+    return {
+        "Ticker": ticker,
+        "Sector ETF": sector_etf,
+        "SPY/SPX Momentum Score": spy_score,
+        "Sector Strength Score": sector_score,
+        "Macro Context Score": macro_score,
+        "Ticker Technical Score": ticker_score,
+        "Weighted Conviction Score": wcs,
+        "Trade Rating (/10)": trade_rating,
+        "Success Probability (%)": prob,
+        "Strategy Type": strat,
+        "Entry Zone": f"{entry_range[0]} – {entry_range[1]}",
+        "TP1/TP2": f"{tps[0]} / {tps[1]}",
+        "Stop Loss": stop,
+        "R:R (to TP1)": rr,
+        "RSI(14)": round(rsi_val, 1),
+        "EMA9/21/50": f"{round(levels['ema9'],2)} / {round(levels['ema21'],2)} / {round(levels['ema50'],2)}",
+        "Price": round(levels["last"], 2),
+    }
+
+def main():
+    parser = argparse.ArgumentParser(description="Swing Trade Scoring Engine (US Equities, EOD via yfinance)")
+    parser.add_argument("--tickers", nargs="+", required=True, help="List of tickers, e.g. NVDA AAPL JPM")
+    parser.add_argument("--days", type=int, default=DEFAULT_LOOKBACK_DAYS, help=f"History length in days (default {DEFAULT_LOOKBACK_DAYS})")
+    parser.add_argument("--csv", action="store_true", help="Export results to CSV in ./output")
+    args = parser.parse_args()
+
+    rows = []
+    for t in args.tickers:
+        try:
+            res = analyze_ticker(t, days=args.days)
+            rows.append(res)
+        except Exception as e:
+            rows.append({"Ticker": t.upper(), "Error": str(e)})
+
+    # Convert to DataFrame and sort by Technical Score (descending)
+    df = pd.DataFrame(rows)
+    df = df.sort_values(by=["Ticker Technical Score", "R:R (to TP1)", "Success Probability (%)"], 
+                       ascending=[False, False, False])
+    
+    # Display sorted results
+    with pd.option_context("display.max_columns", None):
+        print("\nResults (Sorted by Technical Score → Risk/Reward → Success Probability):")
+        print(df.to_string(index=False))
+
+    if args.csv:
+        os.makedirs("output", exist_ok=True)
+        ts = pd.Timestamp.now().strftime("%Y-%m-%d_%H%M")
+        path = os.path.join("output", f"swing_scores_{ts}.csv")
+        df.to_csv(path, index=False)
+        print(f"\nCSV saved → {path}")
+
+if __name__ == "__main__":
+    main()

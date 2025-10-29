@@ -1,87 +1,104 @@
 import pandas as pd
-import plotly.graph_objs as go
-from swing_scoring_engine import analyze_ticker
+import numpy as np
+from datetime import datetime, timedelta
+import yfinance as yf
 
-def compare_scores(tickers):
-    """Compare technical scores and other metrics between multiple tickers."""
-    results = []
+def compare_sectors():
+    """Compare performance across different sectors."""
+    # Sector ETFs to analyze
+    sectors = {
+        'XLK': 'Technology',
+        'XLC': 'Communication Services',
+        'XLY': 'Consumer Discretionary',
+        'XLF': 'Financials',
+        'XLE': 'Energy',
+        'XLV': 'Healthcare',
+        'XLP': 'Consumer Staples',
+        'XLI': 'Industrials',
+        'XLB': 'Materials',
+        'XLRE': 'Real Estate',
+        'XLU': 'Utilities'
+    }
     
-    for ticker in tickers:
+    end_date = datetime.now()
+    start_date = end_date - timedelta(days=200)
+    
+    sector_data = {}
+    
+    # Fetch data for each sector ETF
+    for symbol in sectors.keys():
         try:
-            result = analyze_ticker(ticker)
-            results.append(result)
+            data = yf.download(symbol, start=start_date, end=end_date)
+            if isinstance(data.columns, pd.MultiIndex):
+                # Flatten multi-index columns
+                data = pd.DataFrame({
+                    'Open': data[('Open', symbol)] if ('Open', symbol) in data.columns else data['Open'],
+                    'High': data[('High', symbol)] if ('High', symbol) in data.columns else data['High'],
+                    'Low': data[('Low', symbol)] if ('Low', symbol) in data.columns else data['Low'],
+                    'Close': data[('Close', symbol)] if ('Close', symbol) in data.columns else data['Close'],
+                    'Volume': data[('Volume', symbol)] if ('Volume', symbol) in data.columns else data['Volume']
+                })
+            sector_data[symbol] = data
         except Exception as e:
-            print(f"Error analyzing {ticker}: {str(e)}")
+            print(f"Error fetching data for {symbol}: {str(e)}")
             
-    if not results:
-        return None
-        
-    df = pd.DataFrame(results)
+    # Calculate metrics for each sector
+    sector_metrics = []
     
-    # Convert string scores to float
-    df['Ticker Technical Score'] = df['Ticker Technical Score'].astype(float)
-    df['SPY/SPX Momentum Score'] = df['SPY/SPX Momentum Score'].astype(float)
-    df['R:R (to TP1)'] = df['R:R (to TP1)'].astype(float)
+    for symbol, data in sector_data.items():
+        try:
+            # Calculate key metrics
+            returns = data['Close'].pct_change()
+            volatility = returns.std() * np.sqrt(252)  # Annualized volatility
+            sharpe = (returns.mean() * 252) / volatility  # Approximate Sharpe ratio
+            
+            # Calculate momentum metrics
+            price = data['Close']
+            ema9 = price.ewm(span=9, adjust=False).mean()
+            ema21 = price.ewm(span=21, adjust=False).mean()
+            ema50 = price.ewm(span=50, adjust=False).mean()
+            
+            last_close = price.iloc[-1]
+            
+            # Score based on EMA alignment
+            ema_score = 0
+            if ema9.iloc[-1] > ema21.iloc[-1] > ema50.iloc[-1]:
+                ema_score = 2
+            elif ema9.iloc[-1] < ema21.iloc[-1] < ema50.iloc[-1]:
+                ema_score = -2
+                
+            # Score based on price vs EMAs
+            price_score = 0
+            if last_close > ema50.iloc[-1]:
+                price_score += 1
+            if last_close > ema21.iloc[-1]:
+                price_score += 1
+                
+            # Calculate volume trend
+            recent_volume = data['Volume'].tail(5)
+            x = np.arange(len(recent_volume))
+            volume_trend = np.polyfit(x, recent_volume.values, 1)[0]
+            
+            volume_score = 1 if volume_trend > 0 else -1
+            
+            total_score = ema_score + price_score + volume_score
+            
+            sector_metrics.append({
+                'Sector': sectors[symbol],
+                'Symbol': symbol,
+                'Return (%)': returns.iloc[-1] * 100,
+                'Volatility (%)': volatility * 100,
+                'Sharpe Ratio': sharpe,
+                'Technical Score': total_score,
+                'Above EMA50': last_close > ema50.iloc[-1],
+                'Volume Trend': 'Increasing' if volume_trend > 0 else 'Decreasing'
+            })
+            
+        except Exception as e:
+            print(f"Error analyzing {symbol}: {str(e)}")
+            
+    # Convert to DataFrame and sort by technical score
+    metrics_df = pd.DataFrame(sector_metrics)
+    metrics_df = metrics_df.sort_values('Technical Score', ascending=False)
     
-    return df
-
-def plot_score_comparison(df):
-    """Create a bar plot comparing technical scores."""
-    fig = go.Figure()
-    
-    # Add technical score bars
-    fig.add_trace(go.Bar(
-        x=df['Ticker'],
-        y=df['Ticker Technical Score'],
-        name='Technical Score',
-        marker_color='rgb(55, 83, 109)'
-    ))
-    
-    # Add SPY momentum score bars
-    fig.add_trace(go.Bar(
-        x=df['Ticker'],
-        y=df['SPY/SPX Momentum Score'],
-        name='SPY/SPX Momentum',
-        marker_color='rgb(26, 118, 255)'
-    ))
-    
-    # Update layout
-    fig.update_layout(
-        title='Technical Score Comparison',
-        xaxis_tickangle=-45,
-        barmode='group',
-        bargap=0.15,
-        bargroupgap=0.1,
-        template='plotly_dark'
-    )
-    
-    return fig
-
-def plot_risk_reward_comparison(df):
-    """Create a bar plot comparing risk/reward ratios."""
-    fig = go.Figure()
-    
-    fig.add_trace(go.Bar(
-        x=df['Ticker'],
-        y=df['R:R (to TP1)'],
-        name='Risk/Reward Ratio',
-        marker_color='rgb(26, 118, 255)'
-    ))
-    
-    fig.update_layout(
-        title='Risk/Reward Ratio Comparison',
-        xaxis_tickangle=-45,
-        yaxis_title='R:R Ratio',
-        template='plotly_dark'
-    )
-    
-    return fig
-
-def export_comparison(df, filename='comparison_results.csv'):
-    """Export comparison results to CSV."""
-    try:
-        df.to_csv(f"output/{filename}", index=False)
-        return True
-    except Exception as e:
-        print(f"Error exporting results: {str(e)}")
-        return False
+    return metrics_df

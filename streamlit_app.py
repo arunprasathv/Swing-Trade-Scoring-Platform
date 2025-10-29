@@ -1,205 +1,283 @@
-import streamlit as st
-import pandas as pd
-import os
+import io
 import time
-from datetime import datetime
-import plotly.graph_objs as go
+import numpy as np
+import pandas as pd
+import streamlit as st
+import yfinance as yf
 from swing_scoring_engine import analyze_ticker
-from compare_scores import compare_scores, plot_score_comparison, plot_risk_reward_comparison
 
-def init_session_state():
-    """Initialize session state variables."""
-    if 'results' not in st.session_state:
-        st.session_state.results = pd.DataFrame()
+# ---- UI Configuration ----
+st.set_page_config(page_title="Stratify™", page_icon="📈", layout="wide")
 
-def main():
-    st.set_page_config(page_title="Swing Trading Scanner", layout="wide")
-    init_session_state()
+# ---- Header ----
+col1, col2, col3 = st.columns([2,1,2])
+with col2:
+    st.image("assets/stratify.png", width=150, use_column_width=False)
+
+st.markdown("""
+<div style='text-align: center; padding: 12px 20px; background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%); border-radius: 15px; margin: 5px 0 20px 33%; max-width: 600px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);'>
+    <p style='color: #666; font-size: 16px; margin: 0; text-align: center;'>
+        Professional swing trading signals with real-time analysis
+    </p>
+</div>
+""", unsafe_allow_html=True)
+
+# Add separator
+st.markdown("<hr style='margin: 0 0 30px 0; opacity: 0.2;'>", unsafe_allow_html=True)
+
+# Custom CSS for styling
+st.markdown("""
+<style>
+    .stButton > button {
+        background-color: #28a745;
+        color: white;
+        font-size: 16px;
+        font-weight: bold;
+        padding: 10px 25px;
+        border-radius: 8px;
+        border: none;
+        margin: 0;
+        transition: all 0.3s ease;
+    }
+    .stButton > button:hover {
+        background-color: #218838;
+        transform: translateY(-2px);
+        box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+    }
+    .company-title {
+        font-size: 48px;
+        font-weight: bold;
+        text-align: center;
+        color: #1E1E1E;
+        margin-bottom: 0;
+    }
+    .sub-title {
+        font-size: 24px;
+        text-align: center;
+        color: #4A4A4A;
+        margin-top: 0;
+    }
+    footer {
+        position: fixed;
+        bottom: 0;
+        width: 100%;
+        text-align: center;
+        padding: 10px;
+        background-color: #f0f2f6;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# ---- Market Context (Always Visible) ----
+try:
+    # Get SPY data
+    spy = yf.Ticker("SPY")
+    spy_hist = spy.history(period="2d")
+    prev_close = float(spy_hist['Close'].iloc[-2])
+    spy_price = float(spy_hist['Close'].iloc[-1])
+    price_change = spy_price - prev_close
     
-    # Organization name in sidebar
-    st.sidebar.image("https://place-hold.it/300x100/1B243E/FFFFFF&text=Market%20Compass&bold&fontsize=20", use_column_width=True)
-    st.sidebar.markdown("---")
+    # Get analysis
+    spy_analysis = analyze_ticker("SPY")
+    spy_score = spy_analysis["SPY/SPX Momentum Score"]
     
-    # Main title
-    st.markdown("""
-    <h1 style='text-align: center'>
-        🚀 Swing Trade Scanner
-    </h1>
-    """, unsafe_allow_html=True)
+    # Calculate and format change
+    delta = f"{'+' if price_change > 0 else ''}{price_change:.2f}"
+    delta_color = "normal" if price_change > 0 else "inverse"
     
-    # Version info in sidebar
-    st.sidebar.markdown("### Version: 1.0.0")
-    st.sidebar.markdown("""
-    Powered by Market Compass Technology
-    
-    ---
-    """)
-    
-    # Main app interface
-    col1, col2 = st.columns([2, 3])
-    
+    # Display market context
+    col1, col2 = st.columns([1, 2])
     with col1:
-        st.subheader("🎯 Scanner Settings")
-        default_tickers = ("AAPL,MSFT,NVDA,AMD,GOOGL,META,AMZN,NFLX,TSLA,"
-                         "JPM,BAC,GS,V,MA,WFC,"
-                         "XOM,CVX,COP,"
-                         "JNJ,UNH,PFE,ABBV,LLY,"
-                         "PG,KO,PEP,COST,WMT,"
-                         "CAT,BA,HON,GE,MMM,"
-                         "HD,MCD,NKE,SBUX,DIS")
-        
-        use_default = st.checkbox("Use Default Stock List", value=True)
-        if use_default:
-            ticker_input = default_tickers
-        else:
-            ticker_input = st.text_input("Enter Tickers (comma-separated)", default_tickers)
-        
-        scan_button = st.button("Run Analysis")
-        
-        if scan_button:
-            tickers = [t.strip().upper() for t in ticker_input.split(",")]
-            results = []
-            progress_bar = st.progress(0)
-            
-            for i, ticker in enumerate(tickers):
-                try:
-                    st.write(f"Analyzing {ticker}...")
-                    result = analyze_ticker(ticker)
-                    results.append(result)
-                except Exception as e:
-                    st.error(f"Error analyzing {ticker}: {str(e)}")
-                progress_bar.progress((i + 1) / len(tickers))
-            
-            if results:
-                df = pd.DataFrame(results)
-                st.session_state.results = df
-                
-                st.success("Analysis complete! Expand results below to view details.")
-    
+        st.metric("🌎 Market Score", f"{spy_score}/10", "SPY/SPX")
     with col2:
-        st.subheader("🧭 Market Context")
-        if not st.session_state.results.empty:
-            df = st.session_state.results
-            spy_score = float(df['SPY/SPX Momentum Score'].iloc[0])
+        st.metric("📊 SPY Price", f"${spy_price:.2f}", delta, delta_color=delta_color)
+        
+except Exception as e:
+    st.error(f"Error getting market context: {str(e)}")
+
+# ---- Input Section ----
+input_container = st.container()
+with input_container:
+    col1, col2, col3, col4 = st.columns([3,2,2,1])
+    with col1:
+        tickers_input = st.text_input("📝 Enter Tickers (comma-separated)", value="MSFT, NVDA, AAPL")
+    with col2:
+        min_tech_score = st.slider("📊 Min Technical Score", 0.0, 10.0, 5.0, 0.5)
+    with col3:
+        min_rr = st.slider("⚖️ Min Risk/Reward", 0.0, 3.0, 1.0, 0.1)
+    with col4:
+        st.write("")  # Spacing
+        st.write("")  # Spacing
+        scan_button = st.button("🔍 Scan")
+        
+if scan_button:
+    tickers = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
+    progress = st.progress(0)
+    
+    results = []
+    for idx, ticker in enumerate(tickers, 1):
+        try:
+            analysis = analyze_ticker(ticker)
             
-            # Display SPY score with color coding
-            spy_color = "🟢" if spy_score >= 7 else "🟡" if spy_score >= 5 else "🔴"
-            st.markdown(f"### S&P 500 Momentum Score: {spy_color} {spy_score:.1f}/10")
-            st.markdown("""
-            Score interpretation:
-            - 7-10: Strong bullish momentum
-            - 5-7: Moderate momentum
-            - 0-5: Weak or bearish momentum
-            """)
+            # Only include if meets minimum criteria
+            tech_score = float(analysis["Ticker Technical Score"])
+            rr = float(analysis["R:R (to TP1)"])
             
-            st.markdown("---")
-            st.subheader("📊 Stock Analysis Results")
-            
-            # Filters
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                min_score = st.slider("Min Technical Score", 0.0, 10.0, 0.0)
-            with col2:
-                min_rr = st.slider("Min Risk/Reward Ratio", 0.0, 5.0, 0.0, step=0.5)
-            with col3:
-                # Initialize pattern filter options
-                pattern_options = ['All']
-                if not df.empty and 'Pattern' in df.columns:
-                    pattern_options.extend(list(df['Pattern'].unique()))
+            if tech_score >= min_tech_score and rr >= min_rr:
+                results.append(analysis)
                 
-                pattern_filter = st.multiselect(
-                    "Pattern Filter",
-                    options=pattern_options,
-                    default=['All']
-                )
+        except Exception as e:
+            st.error(f"Error analyzing {ticker}: {str(e)}")
             
-            # Add price vs entry zone status
-            def get_entry_status(row):
-                current_price = float(row['Price'])
-                entry_zone = row['Entry Zone'].split('–')
-                entry_low = float(entry_zone[0])
-                entry_high = float(entry_zone[1])
-                if current_price < entry_low:
-                    return "Below Entry"
-                elif entry_low <= current_price <= entry_high:
-                    return "In Entry Zone ✅"
-                else:
-                    return "Above Entry"
+        progress.progress(idx/len(tickers))
+    
+    if results:
+        # Convert to DataFrame and sort by multiple criteria
+        df = pd.DataFrame(results)
+        df = df.sort_values(
+            by=["Ticker Technical Score", "R:R (to TP1)", "Success Probability (%)"],
+            ascending=[False, False, False]
+        )
+        
+        # Show sorting criteria
+        st.info("📊 Results sorted by: Technical Score → Risk/Reward → Success Probability")
+        
+        # Display results in sections
+        for _, row in df.iterrows():
+            # Pattern-based color and icon
+            pattern = row['Strategy Type']
+            if "bullish" in pattern.lower():
+                pattern_color = "🟢"
+            elif "bearish" in pattern.lower():
+                pattern_color = "🔴"
+            elif "neutral" in pattern.lower() or "consolidation" in pattern.lower():
+                pattern_color = "🟡"
+            else:
+                pattern_color = "⚪"
+                
+            # Get price change
+            ticker = row['Ticker']
+            current_price = row['Price']
+            ticker_hist = yf.Ticker(ticker).history(period="2d")
+            price_text = f"${current_price:.2f}"
+            
+            if len(ticker_hist) >= 2:
+                prev_close = float(ticker_hist['Close'].iloc[-2])
+                price_change = current_price - prev_close
+                pct_change = (price_change / prev_close) * 100
+                pattern_color = "🟢" if price_change > 0 else "🔴"
+                
+                sign = "+" if price_change > 0 else ""
+                arrow = "↑" if price_change > 0 else "↓"
+                price_text = f"${current_price:.2f} {arrow} ({sign}${abs(price_change):.2f}, {sign}{pct_change:.1f}%)"
+            
+            # Create header text
+            header = f"{pattern_color} {row['Ticker']} {price_text} - {row['Strategy Type']} ({row['Ticker Technical Score']}/10)"
+            
+            # Create expander
+            expander = st.expander(header)
+            with expander:
+                cols = st.columns(3)
+                
+                # Column 1: Pattern & Scores
+                with cols[0]:
+                    st.markdown("### 📈 Pattern Analysis")
+                    
+                    # Pattern classification
+                    pattern_type = row['Strategy Type'].split()[0].lower()
+                    if "consolidation" in pattern_type:
+                        st.info(f"📦 {row['Strategy Type']}")
+                    elif "momentum" in pattern_type:
+                        st.success(f"🚀 {row['Strategy Type']}")
+                    elif "reversal" in pattern_type:
+                        st.warning(f"↩️ {row['Strategy Type']}")
+                    elif "testing" in pattern_type:
+                        st.info(f"🎯 {row['Strategy Type']}")
+                    elif "mean" in pattern_type:
+                        st.warning(f"↕️ {row['Strategy Type']}")
+                    else:
+                        st.write(f"⏳ {row['Strategy Type']}")
+                        
+                    st.metric("Technical Score", f"{row['Ticker Technical Score']}/10")
+                    st.metric("Sector Score", f"{row['Sector Strength Score']}/10")
+                
+                # Column 2: Trade Setup
+                with cols[1]:
+                    st.markdown("### 🎯 Trade Setup")
+                    st.write(f"Entry Zone: {row['Entry Zone']}")
+                    st.write(f"Stop Loss: {row['Stop Loss']}")
+                    st.write(f"Targets: {row['TP1/TP2']}")
+                    st.metric("Risk/Reward", str(row['R:R (to TP1)']))
+                
+                # Column 3: Technical Details
+                with cols[2]:
+                    st.markdown("### 📊 Technical Details")
+                    st.write(f"RSI(14): {row['RSI(14)']}")
+                    
+                    # Parse EMAs and display individually
+                    emas = row['EMA9/21/50'].split(" / ")
+                    st.write("EMAs:")
+                    st.write(f"• 9: ${float(emas[0]):.2f}")
+                    st.write(f"• 21: ${float(emas[1]):.2f}")
+                    st.write(f"• 50: ${float(emas[2]):.2f}")
+                    
+                    # Calculate volume metrics
+                    hist = yf.Ticker(row['Ticker']).history(period="30d")
+                    avg_vol_20d = hist['Volume'].iloc[-20:].mean()
+                    current_vol = hist['Volume'].iloc[-1]
+                    vol_ratio = (current_vol / avg_vol_20d) * 100
+                    
+                    # Format volume numbers
+                    def format_volume(vol):
+                        if vol >= 1_000_000:
+                            return f"{vol/1_000_000:.1f}M"
+                        elif vol >= 1_000:
+                            return f"{vol/1_000:.1f}K"
+                        return str(int(vol))
+                    
+                    st.write("")  # Add spacing
+                    st.write("Volume Analysis:")
+                    
+                    # Volume display with scoring impact
+                    if vol_ratio > 100:
+                        vol_impact = "Bullish 📈" if price_change > 0 else "Bearish 📉"
+                        st.write(f"• Today: {format_volume(current_vol)} (↑ {vol_ratio:.0f}% of avg)")
+                        st.caption(f"Volume expansion with {vol_impact} price action")
+                    else:
+                        st.write(f"• Today: {format_volume(current_vol)} (↓ {vol_ratio:.0f}% of avg)")
+                        st.caption("Volume below average - reduced conviction")
+                        
+                    st.write(f"• 20d Avg: {format_volume(avg_vol_20d)}")
+                    
+                    # Volume scoring explanation
+                    st.write("")  # Add spacing
+                    st.write("ℹ️ Volume Impact on Score:")
+                    st.caption("""
+                    • Above average volume (>100%) adds conviction
+                    • Volume expansion with price trend adds score
+                    • Low volume reduces pattern confidence
+                    • Volume trend aligned with price trend increases score
+                    """)
+        
+        # Add download button at bottom
+        st.write("")  # Add spacing
+        csv = df.to_csv(index=False)
+        st.download_button(
+            "📥 Download Full Analysis",
+            csv,
+            "stratify_analysis.csv",
+            "text/csv",
+            key='download-csv',
+            help="Download detailed analysis in CSV format"
+        )
+        
+    else:
+        st.warning("No tickers met the minimum criteria.")
 
-            df['Entry Status'] = df.apply(get_entry_status, axis=1)
-            
-            # Filter the dataframe
-            filtered_df = df[
-                (df['Ticker Technical Score'].astype(float) >= min_score) &
-                (df['R:R (to TP1)'].astype(float) >= min_rr)
-            ]
-
-            # Additional entry zone filter
-            entry_filter = st.radio(
-                "Entry Zone Filter",
-                ["All", "In Entry Zone", "Below Entry", "Above Entry"],
-                horizontal=True
-            )
-            if entry_filter != "All":
-                filtered_df = filtered_df[filtered_df['Entry Status'] == entry_filter]
-            if 'All' not in pattern_filter:
-                filtered_df = filtered_df[filtered_df['Pattern'].isin(pattern_filter)]
-            
-            # Display summary
-            st.markdown(f"**Found {len(filtered_df)} stocks matching criteria**")
-            
-            # Sort by technical score if min_score > 0
-            if min_score > 0:
-                filtered_df = filtered_df.sort_values('Ticker Technical Score', ascending=False)
-            
-            # Display results for each stock
-            for _, row in filtered_df.iterrows():
-                with st.expander(f"📊 {row['Ticker']} - Score: {row['Ticker Technical Score']}/10"):
-                    # Technical Score explanation
-                    score_color = "🟢" if float(row['Ticker Technical Score']) >= 7 else "🟡" if float(row['Ticker Technical Score']) >= 5 else "🔴"
-                    st.markdown(f"**Technical Score:** {score_color} {row['Ticker Technical Score']}/10 | **Current Price:** ${row['Price']}")
-                    
-                    st.markdown(f"**Pattern Detected:** {row['Pattern']}")
-                    
-                    # EMAs status
-                    emas = row['EMA9/21/50'].split('/')
-                    st.markdown("**Moving Averages:**")
-                    st.markdown(f"- EMA9: ${emas[0]}")
-                    st.markdown(f"- EMA21: ${emas[1]}")
-                    st.markdown(f"- EMA50: ${emas[2]}")
-                    
-                    # RSI status
-                    rsi = float(row['RSI(14)'])
-                    rsi_status = "Overbought" if rsi > 70 else "Oversold" if rsi < 30 else "Neutral"
-                    st.markdown(f"**RSI(14):** {rsi:.1f} - {rsi_status}")
-                    
-                    # Trade setup
-                    st.markdown("**Potential Trade Setup:**")
-                    st.markdown(f"- Entry Zone: {row['Entry Zone']}")
-                    st.markdown(f"- Target 1: {row['TP1/TP2'].split('/')[0]}")
-                    st.markdown(f"- Stop Loss: {row['Stop Loss']}")
-                    st.markdown(f"- Risk/Reward: {row['R:R (to TP1)']}")
-            
-            # Add comparison charts
-            st.markdown("---")
-            st.subheader("📈 Comparative Analysis")
-            
-            fig_scores = plot_score_comparison(filtered_df)
-            st.plotly_chart(fig_scores, use_container_width=True)
-            
-            fig_rr = plot_risk_reward_comparison(filtered_df)
-            st.plotly_chart(fig_rr, use_container_width=True)
-            
-            # Add export button
-            st.markdown("---")
-            if st.button("📥 Export Analysis"):
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                filename = f"scan_results_{timestamp}.csv"
-                os.makedirs("output", exist_ok=True)
-                filtered_df.to_csv(f"output/{filename}", index=False)
-                st.success(f"Analysis exported to: {filename}")
-        else:
-            st.info("Enter tickers and click 'Run Analysis' to see results")
-
-if __name__ == "__main__":
-    main()
+# ---- Footer ----
+st.markdown("""
+<footer>
+    <p style='margin-bottom: 5px;'>Data source: yfinance (EOD) • Designed for 2-10 day swing setups</p>
+    <p style='margin: 0;'><strong>Stratify™</strong> • Professional Trading Analysis</p>
+</footer>
+""", unsafe_allow_html=True)
