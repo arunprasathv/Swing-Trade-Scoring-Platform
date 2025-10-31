@@ -196,61 +196,10 @@ if scan_button:
                 # Column 2: Trade Setup
                 with cols[1]:
                     st.markdown("### 🎯 Trade Setup")
-                    
-                    # Entry Zone with tooltip
-                    col1, col2 = st.columns([6, 1])
-                    with col1:
-                        st.write(f"Entry Zone: {row['Entry Zone']}")
-                    with col2:
-                        st.help("""
-                        Entry Zone = EMA21 ± (0.3 × ATR)
-                        • Calculated around 21-day moving average
-                        • ±30% of ATR provides flexibility
-                        • Best entry: lower end of range
-                        • Waits for pullback to key support
-                        """)
-                    
-                    # Stop Loss with tooltip
-                    col1, col2 = st.columns([6, 1])
-                    with col1:
-                        st.write(f"Stop Loss: {row['Stop Loss']}")
-                    with col2:
-                        st.help("""
-                        Stop Loss = Recent swing low or nearest EMA
-                        • Uses 5-day swing low
-                        • Or EMA21/EMA50 if price is above them
-                        • No ATR buffer added (tighter risk)
-                        • Protects against breakdown
-                        """)
-                    
-                    # Targets with tooltip
-                    col1, col2 = st.columns([6, 1])
-                    with col1:
-                        st.write(f"Targets: {row['TP1/TP2']}")
-                    with col2:
-                        st.help("""
-                        TP1 = Current Price + Recent Range
-                        TP2 = TP1 + ATR
-                        
-                        • TP1: Recovers recent 5-day decline
-                        • TP2: Extended target with momentum
-                        • Based on actual price behavior
-                        • Volatility-adjusted using ATR
-                        """)
-                    
-                    # Risk/Reward with tooltip
-                    col1, col2 = st.columns([6, 1])
-                    with col1:
-                        st.metric("Risk/Reward", str(row['R:R (to TP1)']))
-                    with col2:
-                        st.help("""
-                        R:R = (TP1 - Current Price) / (Current Price - Stop)
-                        
-                        • Measures potential reward vs risk
-                        • Minimum 1:1 for viable trades
-                        • 2:1+ considered good setups
-                        • Capped at 5:1 to avoid unrealistic ratios
-                        """)
+                    st.write(f"Entry Zone: {row['Entry Zone']}")
+                    st.write(f"Stop Loss: {row['Stop Loss']}")
+                    st.write(f"Targets: {row['TP1/TP2']}")
+                    st.metric("Risk/Reward", str(row['R:R (to TP1)']))
                 
                 # Column 3: Technical Details
                 with cols[2]:
