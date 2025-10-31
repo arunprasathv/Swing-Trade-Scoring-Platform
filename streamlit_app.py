@@ -14,14 +14,6 @@ col1, col2, col3 = st.columns([2,1,2])
 with col2:
     st.image("assets/stratify.png", width=150, use_column_width=False)
 
-st.markdown("""
-<div style='text-align: center; padding: 12px 20px; background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%); border-radius: 15px; margin: 5px 0 20px 33%; max-width: 600px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);'>
-    <p style='color: #666; font-size: 16px; margin: 0; text-align: center;'>
-        Professional swing trading signals with real-time analysis
-    </p>
-</div>
-""", unsafe_allow_html=True)
-
 # Add separator
 st.markdown("<hr style='margin: 0 0 30px 0; opacity: 0.2;'>", unsafe_allow_html=True)
 
@@ -204,22 +196,81 @@ if scan_button:
                 # Column 2: Trade Setup
                 with cols[1]:
                     st.markdown("### 🎯 Trade Setup")
-                    st.write(f"Entry Zone: {row['Entry Zone']}")
-                    st.write(f"Stop Loss: {row['Stop Loss']}")
-                    st.write(f"Targets: {row['TP1/TP2']}")
-                    st.metric("Risk/Reward", str(row['R:R (to TP1)']))
+                    
+                    # Entry Zone with tooltip
+                    col1, col2 = st.columns([6, 1])
+                    with col1:
+                        st.write(f"Entry Zone: {row['Entry Zone']}")
+                    with col2:
+                        st.help("""
+                        Entry Zone = EMA21 ± (0.3 × ATR)
+                        • Calculated around 21-day moving average
+                        • ±30% of ATR provides flexibility
+                        • Best entry: lower end of range
+                        • Waits for pullback to key support
+                        """)
+                    
+                    # Stop Loss with tooltip
+                    col1, col2 = st.columns([6, 1])
+                    with col1:
+                        st.write(f"Stop Loss: {row['Stop Loss']}")
+                    with col2:
+                        st.help("""
+                        Stop Loss = Recent swing low or nearest EMA
+                        • Uses 5-day swing low
+                        • Or EMA21/EMA50 if price is above them
+                        • No ATR buffer added (tighter risk)
+                        • Protects against breakdown
+                        """)
+                    
+                    # Targets with tooltip
+                    col1, col2 = st.columns([6, 1])
+                    with col1:
+                        st.write(f"Targets: {row['TP1/TP2']}")
+                    with col2:
+                        st.help("""
+                        TP1 = Current Price + Recent Range
+                        TP2 = TP1 + ATR
+                        
+                        • TP1: Recovers recent 5-day decline
+                        • TP2: Extended target with momentum
+                        • Based on actual price behavior
+                        • Volatility-adjusted using ATR
+                        """)
+                    
+                    # Risk/Reward with tooltip
+                    col1, col2 = st.columns([6, 1])
+                    with col1:
+                        st.metric("Risk/Reward", str(row['R:R (to TP1)']))
+                    with col2:
+                        st.help("""
+                        R:R = (TP1 - Current Price) / (Current Price - Stop)
+                        
+                        • Measures potential reward vs risk
+                        • Minimum 1:1 for viable trades
+                        • 2:1+ considered good setups
+                        • Capped at 5:1 to avoid unrealistic ratios
+                        """)
                 
                 # Column 3: Technical Details
                 with cols[2]:
                     st.markdown("### 📊 Technical Details")
                     st.write(f"RSI(14): {row['RSI(14)']}")
+                    st.write(f"ATR(14): ${row['ATR(14)']}")
                     
-                    # Parse EMAs and display individually
+                    # Parse EMAs and display individually with price comparison
                     emas = row['EMA9/21/50'].split(" / ")
+                    current_price = row['Price']
                     st.write("EMAs:")
-                    st.write(f"• 9: ${float(emas[0]):.2f}")
-                    st.write(f"• 21: ${float(emas[1]):.2f}")
-                    st.write(f"• 50: ${float(emas[2]):.2f}")
+                    
+                    # Compare price with each EMA
+                    ema9 = float(emas[0])
+                    ema21 = float(emas[1])
+                    ema50 = float(emas[2])
+                    
+                    st.write(f"• 9: ${ema9:.2f} {'✅' if current_price > ema9 else '❌'}")
+                    st.write(f"• 21: ${ema21:.2f} {'✅' if current_price > ema21 else '❌'}")
+                    st.write(f"• 50: ${ema50:.2f} {'✅' if current_price > ema50 else '❌'}")
                     
                     # Calculate volume metrics
                     hist = yf.Ticker(row['Ticker']).history(period="30d")

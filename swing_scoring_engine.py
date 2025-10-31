@@ -308,6 +308,9 @@ def analyze_ticker(ticker: str, days: int = DEFAULT_LOOKBACK_DAYS):
         if risk_pct < 0.002:  # If risk is less than 0.2% of price
             risk = current_price * 0.002  # Use minimum 0.2% risk
         rr = round(min(reward / risk, 5.0), 2)  # Cap at 5:1
+    # Calculate ATR for display
+    atr = round(float((ticker_df["High"] - ticker_df["Low"]).rolling(14).mean().iloc[-1]), 2)
+    
     trade_rating = round(wcs, 1)
     return {
         "Ticker": ticker,
@@ -325,6 +328,7 @@ def analyze_ticker(ticker: str, days: int = DEFAULT_LOOKBACK_DAYS):
         "Stop Loss": stop,
         "R:R (to TP1)": rr,
         "RSI(14)": round(rsi_val, 1),
+        "ATR(14)": atr,
         "EMA9/21/50": f"{round(levels['ema9'],2)} / {round(levels['ema21'],2)} / {round(levels['ema50'],2)}",
         "Price": round(levels["last"], 2),
     }
